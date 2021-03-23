@@ -1,0 +1,203 @@
+---
+title: "P8106 HW 3" 
+author: "Minjie Bao"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 2
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '2'
+header-includes:
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+- \pagestyle{fancy}
+- \fancyhead[R]{\thepage}
+- \fancypagestyle{plain}{\pagestyle{fancy}}
+--- 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+
+\newpage
+
+```{r}
+library(ISLR)
+library(tidyverse)
+library(caret)
+library(AppliedPredictiveModeling)
+library(glmnet)
+library(e1071)
+library(pROC)
+library(MASS)
+library(mlbench)
+library(class)
+library(klaR)
+
+```
+
+# Data preparation
+
+```{r}
+data("Weekly")
+weekly_df = Weekly %>% 
+  janitor::clean_names()
+#head(weekly_df)
+#skimr::skim(weekly_df)
+summary(weekly_df)
+```
+
+# (a) Produce some graphical summaries of the Weekly data
+
+```{r}
+# density plot
+transparentTheme(trans = .4)
+featurePlot(x = weekly_df[, 1:8], 
+            y = weekly_df$direction,
+            scales = list(x=list(relation="free"), 
+                        y=list(relation="free")),
+            plot = "density", pch = "|", 
+            auto.key = list(columns = 2))
+
+# pairs scatterplot
+pairs(weekly_df)
+```
+
+# (b) logistic regression and confusion matrix
+
+### Use the data from 1990 to 2008 as the training data and the held-out data as the test data. Perform a logistic regression with Direction as the response and the five Lag variables plus Volume as predictors. Do any of the predictors appear to be statistically significant? If so, which ones? Compute the confusion matrix and overall fraction of correct predictions using the test data. Briefly explain what the confusion matrix is telling you.
+
+```{r}
+# divide data into train and test
+row_train = weekly_df$year<=2008
+row_test = weekly_df[!row_train,]
+
+# logistic regression
+glm.fit = glm(direction~lag1+lag2+lag3+lag4+lag5+volume,
+                data = weekly_df,
+                subset = row_train,
+                family = binomial(link = 'logit'))
+summary(glm.fit)
+
+contrasts(weekly_df$direction)
+
+# confusion matrix
+test_pred_prob <- predict(glm.fit, newdata = weekly_df[-row_train,],
+                           type = "response")
+
+test_pred <- rep("Down", length(test_pred_prob))
+test_pred[test_pred_prob>0.5] <- "Up"
+
+confusionMatrix(data = as.factor(test_pred),
+                reference = weekly_df$direction[-row_train],
+                positive = "Up")
+
+```
+
+From the logistic regression summary output, we can see that only lag1 is significant with p-value = 0.0338 < 0.05.
+
+From the confusion matrix:
+
+The accuracy is 0.5533, which means the overall fraction of correct prediction is 0.5533 with 95% CI between 0.5232 and 0.5831.
+
+The NIR (No Information Rate) is 0.5865, which means the fraction of "Up" class in both predicted and trained dataset is 0.5865.
+
+The p-value is 0.585 > 0.05, which means we failed to reject the null hypothesis and conclude that accuracy is equal to no information rate. 
+
+The kappa value is 0.0437, which means the agreement between the predictive value and the true value is 0.0437. A kappa value of 1 represents perfect agreement, while a value of 0 represents no agreement.
+
+The sensitivity is 0.8116, measures the proportion of actual positives that are correctly identified TP/(TP+FN).
+
+The specificity is 0.2298, measures the proportion of actual negative that are correctly identified TN/(FP+TN).
+
+# (c) logistic regression, ROC curve and AUC
+
+### Now fit the logistic regression model using the training data period from 1990 to 2008, with Lag1 and Lag2 as the predictors. Plot the ROC curve using the test data and report the AUC.
+
+```{r}
+# fit regression using training data
+glm.fit_train = glm(direction ~ lag1 + lag2, 
+                    data = weekly_df, 
+                    subset = row_train, 
+                    family = binomial)
+
+# predict using test data
+test.pred.prob = predict(glm.fit_train, newdata = row_test, type = "response")
+
+# plot ROC curve and report AUC
+roc.glm <- roc(row_test$direction, test.pred.prob)
+plot(roc.glm, legacy.axes = TRUE, print.auc = TRUE)
+plot(smooth(roc.glm), col = 4, add = TRUE)
+```
+
+AUC for GLM is 0.556.
+
+# (d) Repeat (c) using LDA and QDA.
+### LDA
+```{r}
+# fit model on training and predict on test
+lda.fit = lda(direction ~ lag1 + lag2,
+              data = weekly_df,
+              subset = row_train)
+lda.pred = predict(lda.fit, 
+                   newdata = row_test)
+# plot ROC curve
+roc.lda = roc(row_test$direction, lda.pred$posterior[,2],
+           levels = c("Down", "Up"))
+plot(roc.lda, legacy.axes = T, print.auc = T)
+plot(smooth(roc.lda),col = 4, add = TRUE)
+```
+
+AUC for LDA is 0.557.
+
+### QDA
+```{r}
+# fit model on trainning and predict on test
+qda.fit = qda(direction ~ lag1 + lag2,
+              data = weekly_df,
+              subset = row_train)
+qda.pred = predict(qda.fit, 
+                   newdata = row_test)
+# plot ROC curve
+roc.qda = roc(row_test$direction, qda.pred$posterior[,2],
+           levels = c("Down", "Up"))
+plot(roc.qda, legacy.axes = T, print.auc = T)
+plot(smooth(roc.qda), col = 4, add = TRUE)
+```
+
+AUC for QDA is 0.529.
+
+# (e) Repeat (c) using KNN. Briefly discuss your results in (c) to (e).
+```{r}
+set.seed(2)
+ctrl <- trainControl(method = "repeatedcv",
+                     repeats = 5,
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE)
+knn.fit <- train(x = weekly_df[row_train, 2:3],
+                   y = weekly_df$direction[row_train],
+                   method = "knn",
+                   preProcess = c("center","scale"),
+                   tuneGrid = data.frame(k = seq(1,200,by=5)),
+                   trControl = ctrl)
+summary(knn.fit)
+# predict on test data
+knn.pred = predict(knn.fit, newdata = row_test, type = "prob")
+# plot ROC curve
+roc.knn = roc(row_test$direction, knn.pred$Up, levels = c("Down", "Up"))
+plot(roc.knn, legacy.axes = T, print.auc = T)
+plot(smooth(roc.knn),col = 4, add = TRUE)
+
+# model comparison
+plot(roc.glm, col = "green", legacy.axes = TRUE) #GLM
+plot(roc.lda, col = "blue", add = TRUE) #LDA
+plot(roc.qda, col = "red", add = TRUE) #QDA
+plot(roc.knn, col = "black", add = TRUE) #KNN
+```
+
+AUC for KNN is 0.535.
+
+After comparing the AUC and ROC curves among LGM, LDA, QDA and KNN, we can see that LDA has the largest AUC = 0.557. This means the LDA has a better performance at distinguishing between the positive and negative classes than other models. All these models' AUC are close to 0.5, and an AUC of 0.5 suggests no discrimination. From the ROC curves, we can also see that LDA (blue ROC curve) performs better than other models since the closer an ROC curve is to the upper left corner, the more efficient is the test.
